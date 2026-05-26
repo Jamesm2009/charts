@@ -1,0 +1,124 @@
+AETD Custom Chart Tool — Deployment Guide
+charts.market-dashboards.com | Dokku on DigitalOcean
+=====================================================
+
+FILES YOU NEED IN YOUR REPO
+----------------------------
+  app.py
+  requirements.txt
+  Procfile
+  runtime.txt
+
+Do NOT include a templates/ folder — Dash handles its own HTML.
+
+
+PART 1 — CREATE THE DOKKU APP (do this once, on your server)
+------------------------------------------------------------
+SSH into your DigitalOcean droplet, then run these commands
+one at a time:
+
+  dokku apps:create aetd-charts
+
+Set your Upstash Redis credentials as environment variables:
+
+  dokku config:set aetd-charts \
+    UPSTASH_REDIS_REST_URL=https://YOUR-UPSTASH-URL.upstash.io \
+    UPSTASH_REDIS_REST_TOKEN=YOUR-UPSTASH-TOKEN
+
+  (Replace the values with the ones from your Upstash dashboard.
+   Go to upstash.com -> your database -> REST API tab)
+
+Point your domain at this app:
+
+  dokku domains:add aetd-charts charts.market-dashboards.com
+
+Enable free SSL (Let's Encrypt):
+
+  dokku letsencrypt:set aetd-charts email your@email.com
+  dokku letsencrypt:enable aetd-charts
+
+
+PART 2 — PUSH YOUR CODE (from your local machine)
+-------------------------------------------------
+On your local computer, open Terminal and navigate to your
+project folder.
+
+Initialize a git repo if you haven't already:
+
+  git init
+  git add .
+  git commit -m "Initial commit"
+
+Add the Dokku remote (replace YOUR_DROPLET_IP):
+
+  git remote add dokku dokku@YOUR_DROPLET_IP:aetd-charts
+
+Deploy:
+
+  git push dokku main
+
+Dokku will automatically:
+  - Detect Python (via runtime.txt)
+  - Install requirements.txt
+  - Start gunicorn using your Procfile
+  - Route traffic through Nginx to charts.market-dashboards.com
+
+Watch the build logs scroll by — deployment takes 2-3 minutes.
+When you see "Application deployed", visit:
+  https://charts.market-dashboards.com
+
+
+PART 3 — UPDATING THE APP LATER
+---------------------------------
+Each time you change app.py, just:
+
+  git add app.py
+  git commit -m "Describe your change"
+  git push dokku main
+
+Dokku redeploys with zero-downtime.
+
+
+PART 4 — CHECKING LOGS IF SOMETHING GOES WRONG
+------------------------------------------------
+On your server:
+
+  dokku logs aetd-charts --tail 50
+
+Common issues:
+  - "No module named X" -> check requirements.txt, push again
+  - App not responding -> dokku ps:restart aetd-charts
+  - Redis errors -> check config with: dokku config aetd-charts
+
+
+ENVIRONMENT VARIABLES REFERENCE
+---------------------------------
+  UPSTASH_REDIS_REST_URL      Required for caching (from Upstash dashboard)
+  UPSTASH_REDIS_REST_TOKEN    Required for caching (from Upstash dashboard)
+  PORT                        Set automatically by Dokku — do not set manually
+
+
+HOW THE CACHE WORKS
+---------------------
+1. First chart load: fetches live data from Yahoo Finance (~1-2s)
+2. Saves to local disk AND Upstash Redis
+3. Next load of same ticker: serves from local disk instantly
+4. If server restarts (Dokku redeploy): local disk clears,
+   but Redis still has data — second load is still fast
+5. Cache expires: 1 hour (daily data), 6 hours (weekly data)
+6. To force-refresh a ticker: just wait for cache to expire,
+   or clear Redis from the Upstash dashboard
+
+
+WHAT EACH FEATURE DOES
+------------------------
+Timeframe toggle      Daily (~12 months) or Weekly (~5 years)
+Bollinger Bands       Volume-adjusted 21-period bands (wider in high-vol)
+MA 63                 63-period simple moving average
+Volume MA             20-period average volume line
+Stoch RSI             14-period Stochastic RSI — OB > 80, OS < 20
+Momentum Bars         5-day return (green/red bars) vs 63-day baseline
+Z-Score               How far price is from its 12-month average
+Export CSV            Downloads OHLCV + all indicators as a CSV file
+Export PNG            Use the camera icon in the top-right of the chart
+

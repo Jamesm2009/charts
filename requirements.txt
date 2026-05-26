@@ -1,0 +1,7 @@
+dash>=2.14
+plotly>=5.18
+yfinance>=0.2.36
+pandas>=2.0
+numpy>=1.26
+requests>=2.31
+gunicorn>=21.0
