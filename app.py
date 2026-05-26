@@ -161,13 +161,12 @@ def fetch_data(ticker, is_weekly=False):
     except Exception:
         info = {}
 
-# yfinance >= 0.2.38 returns MultiIndex columns — flatten to simple names\n   
-    if isinstance(df.columns, pd.MultiIndex):\n        
-      df.columns = df.columns.get_level_values(0)\n    
-      df = df.dropna()\n    
-     save_cache(ticker, is_weekly, df, info)\n    
-    return df, 
-    info
+    # yfinance >= 0.2.38 returns MultiIndex columns — flatten to simple names
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.get_level_values(0)
+    df = df.dropna()
+    save_cache(ticker, is_weekly, df, info)
+    return df, info
 
 
 # ── Asset-type detection ──────────────────────────────────────────────────────
