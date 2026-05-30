@@ -588,8 +588,8 @@ app.layout = html.Div(style={"background": C["bg"], "minHeight": "100vh"}, child
     # Sub-panel toggles
     html.Div([
         html.Span("Show:", style={"color": C["muted"], "fontSize": "11px", "marginRight": "8px"}),
-        html.Button("Realized Vol",    id="toggle-rv",  n_clicks=1, style=_tog_style(True)),
-        html.Button("Rate of Change",  id="toggle-roc", n_clicks=1, style=_tog_style(True)),
+        html.Button("Realized Vol",    id="toggle-rv",  n_clicks=0, style=_tog_style(True)),
+        html.Button("Rate of Change",  id="toggle-roc", n_clicks=0, style=_tog_style(True)),
     ], style={"padding": "5px 14px", "background": C["bg"],
               "borderBottom": f"1px solid {C['border']}",
               "display": "flex", "alignItems": "center"}),
@@ -599,12 +599,6 @@ app.layout = html.Div(style={"background": C["bg"], "minHeight": "100vh"}, child
              "minHeight": "20px", "color": C["muted"],
              "background": C["bg"], "fontFamily": "IBM Plex Mono",
              "borderBottom": f"1px solid {C['border']}"}),
-
-    # Chart title row
-    html.Div(id="chart-title-row", style={"padding": "3px 14px", "fontSize": "12px",
-             "fontWeight": "700", "color": C["text"], "background": C["bg"],
-             "fontFamily": "IBM Plex Mono", "display": "flex",
-             "justifyContent": "space-between", "alignItems": "center"}),
 
     # Chart + sidebar
     html.Div([
@@ -638,7 +632,6 @@ app.layout = html.Div(style={"background": C["bg"], "minHeight": "100vh"}, child
     Output("stats-sidebar",       "children"),
     Output("mobile-stats-panel",  "children"),
     Output("status-bar",          "children"),
-    Output("chart-title-row",     "children"),
     Input("load-btn",             "n_clicks"),
     Input("timeframe",            "value"),
     Input("toggle-rv",            "n_clicks"),
@@ -688,7 +681,7 @@ def update_chart(n_load, tf, n_rv, n_roc, ticker, asset_type):
         html.Div(ob_el),
     ]
 
-    return fig, panel, panel, status, title_children
+    return fig, panel, panel, status
 
 
 @app.callback(
