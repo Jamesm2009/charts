@@ -62,8 +62,8 @@ C = {
     "price":   "#4a9eff",
     "ema21":   "#93c5fd",
     "ema63":   "#f97316",
-    "bb_band": "rgba(160,160,170,0.40)",
-    "bb_fill": "rgba(160,160,170,0.06)",
+    "bb_band": "rgba(215,215,219,0.40)",
+    "bb_fill": "rgba(215,215,219,0.06)",
     "mom_pos": "rgba(52,211,153,0.28)",
     "mom_neg": "rgba(248,113,113,0.28)",
     "vol_up":  "rgba(52,211,153,0.50)",
@@ -237,12 +237,12 @@ def build_chart(df, ticker, is_weekly, is_mf, show_rv, show_roc):
     row_heights = [1.0]
     if show_rv:
         row_labels.append("rv")
-        row_heights.append(0.28)
+        row_heights.append(0.20)
     row_labels.append("stoch")
-    row_heights.append(0.28)
+    row_heights.append(0.20)
     if show_roc:
         row_labels.append("roc")
-        row_heights.append(0.22)
+        row_heights.append(0.16)
 
     total   = sum(row_heights)
     heights = [h / total for h in row_heights]
