@@ -322,9 +322,14 @@ def apply_all(df):
     df["BB_Mid"]       = bb["mid"]
     df["BB_TopMid"]    = bb["top_mid"]
     df["BB_BottomMid"] = bb["bottom_mid"]
-    df["BB_Trend"]     = bb["trend"]
-    df["BB_Bull"]      = bb["bull"]
+    df["BB_Trend"]     = bb["trend"]       # 63-period Donchian mid (trend line)
+    df["BB_Bull"]      = bb["bull"]        # close >= trend line
     df["BB_Hurst"]     = bb["hurst"]
+
+    # Trade line: 15-period Donchian midpoint (Pine's `trade` variable)
+    trade_line = (low.rolling(15).min() +
+                  (high.rolling(15).max() - low.rolling(15).min()) / 2)
+    df["BB_Trade"]     = trade_line        # 15-period trade signal line
 
     # ── EMAs ─────────────────────────────────────────────────────────────────
     df["EMA21"]  = close.ewm(span=21,  adjust=False).mean()
@@ -478,35 +483,64 @@ def build_chart(df, ticker, is_weekly, is_mf, show_rv, show_stoch):
                 line=dict(color="#f97316", width=1), showlegend=True,
             ), row=1, col=1, secondary_y=False)
 
-    # ── Bridge Bands ──────────────────────────────────────────────────────────
-    # Colour follows the trend signal (close vs Donchian-63 midpoint)
-    bull_series = display["BB_Bull"].fillna(True)
-    # We draw the band with the last bar's colour for simplicity —
-    # a single fill between top/bottom uses one colour.
-    # To show the colour change we use a scatter with the dominant recent signal.
-    last_bull = bool(bull_series.iloc[-1])
-    band_col  = C["bb_bull"] if last_bull else C["bb_bear"]
-    fill_col  = C["bb_fill_bull"] if last_bull else C["bb_fill_bear"]
+    # ── Bridge Bands — per-segment color, no fill ────────────────────────────
+    # Bull = close >= 63-period Donchian mid (trend line).
+    # We split the top/bottom band into contiguous bull/bear segments so each
+    # segment can be drawn in its own color without a single-color compromise.
+    bull_arr  = display["BB_Bull"].fillna(True).values
+    upper_arr = display["BB_Upper"].values
+    lower_arr = display["BB_Lower"].values
+    idx_arr   = np.array(idx)
 
-    # Top band
-    fig.add_trace(go.Scatter(
-        x=idx, y=display["BB_Upper"], name="BB Top",
-        line=dict(color=band_col, width=1.5),
-        showlegend=True,
-    ), row=1, col=1, secondary_y=False)
-    # Bottom band — fill back to top
-    fig.add_trace(go.Scatter(
-        x=idx, y=display["BB_Lower"], name="BB Bot",
-        line=dict(color=band_col, width=1.5),
-        fill="tonexty", fillcolor=fill_col,
-        showlegend=False,
-    ), row=1, col=1, secondary_y=False)
-    # Mid line (subtle dashed)
+    def _split_segments(arr_x, arr_y, bull_mask):
+        """Yield (x_list, y_list, is_bull) for each contiguous same-color segment."""
+        if len(arr_x) == 0:
+            return
+        seg_x, seg_y = [arr_x[0]], [arr_y[0]]
+        cur = bool(bull_mask[0])
+        for i in range(1, len(arr_x)):
+            b = bool(bull_mask[i])
+            if b != cur:
+                yield seg_x, seg_y, cur
+                seg_x, seg_y = [arr_x[i-1], arr_x[i]], [arr_y[i-1], arr_y[i]]
+                cur = b
+            else:
+                seg_x.append(arr_x[i])
+                seg_y.append(arr_y[i])
+        yield seg_x, seg_y, cur
+
+    first_seg = True
+    for seg_x, seg_y, is_bull in _split_segments(idx_arr, upper_arr, bull_arr):
+        col = C["bb_bull"] if is_bull else C["bb_bear"]
+        fig.add_trace(go.Scatter(
+            x=seg_x, y=seg_y,
+            line=dict(color=col, width=2),
+            mode="lines",
+            name="BB Top" if first_seg else "",
+            showlegend=first_seg,
+            legendgroup="bb_top",
+        ), row=1, col=1)
+        first_seg = False
+
+    first_seg = True
+    for seg_x, seg_y, is_bull in _split_segments(idx_arr, lower_arr, bull_arr):
+        col = C["bb_bull"] if is_bull else C["bb_bear"]
+        fig.add_trace(go.Scatter(
+            x=seg_x, y=seg_y,
+            line=dict(color=col, width=2),
+            mode="lines",
+            name="BB Bot" if first_seg else "",
+            showlegend=first_seg,
+            legendgroup="bb_bot",
+        ), row=1, col=1)
+        first_seg = False
+
+    # Mid line — subtle dashed
     fig.add_trace(go.Scatter(
         x=idx, y=display["BB_Mid"], name="BB Mid",
         line=dict(color=C["bb_mid"], width=1, dash="dot"),
         showlegend=False,
-    ), row=1, col=1, secondary_y=False)
+    ), row=1, col=1)
 
     # ── Price candles / line ──────────────────────────────────────────────────
     if not is_mf:
@@ -517,22 +551,46 @@ def build_chart(df, ticker, is_weekly, is_mf, show_rv, show_stoch):
             name="Price",
             increasing_line_color=C["price"], decreasing_line_color="#ef4444",
             increasing_fillcolor=C["price"],  decreasing_fillcolor="#ef4444",
-        ), row=1, col=1, secondary_y=False)
+        ), row=1, col=1)
     else:
         fig.add_trace(go.Scatter(
             x=idx, y=display["Close"], name="Price",
             line=dict(color=C["price"], width=2),
-        ), row=1, col=1, secondary_y=False)
+        ), row=1, col=1)
 
-    # ── EMAs ─────────────────────────────────────────────────────────────────
-    fig.add_trace(go.Scatter(
-        x=idx, y=display["EMA21"], name="EMA 21",
-        line=dict(color="#93c5fd", width=1.5),
-    ), row=1, col=1, secondary_y=False)
-    fig.add_trace(go.Scatter(
-        x=idx, y=display["EMA63"], name="EMA 63",
-        line=dict(color="#f97316", width=2),
-    ), row=1, col=1, secondary_y=False)
+    # ── Trend line (63-period Donchian mid) — solid, color = bull/bear ────────
+    trend_arr  = display["BB_Trend"].values
+    first_seg  = True
+    for seg_x, seg_y, is_bull in _split_segments(idx_arr, trend_arr, bull_arr):
+        col = C["bb_bull"] if is_bull else C["bb_bear"]
+        fig.add_trace(go.Scatter(
+            x=seg_x, y=seg_y,
+            line=dict(color=col, width=2),
+            mode="lines",
+            name="Trend (63)" if first_seg else "",
+            showlegend=first_seg,
+            legendgroup="bb_trend",
+        ), row=1, col=1)
+        first_seg = False
+
+    # ── Trade line (15-period Donchian mid) — bright dots, color = bull/bear ──
+    # Pine uses plot.style_circles; we use mode="markers" with circle markers.
+    # Color per bar: green if close > trade mid, red otherwise.
+    trade_arr  = display["BB_Trade"].values
+    close_arr  = display["Close"].values
+    trade_bull = close_arr >= trade_arr
+    first_seg  = True
+    for seg_x, seg_y, is_bull in _split_segments(idx_arr, trade_arr, trade_bull):
+        col = C["bb_bull"] if is_bull else C["bb_bear"]
+        fig.add_trace(go.Scatter(
+            x=seg_x, y=seg_y,
+            mode="markers",
+            marker=dict(color=col, size=4, symbol="circle"),
+            name="Trade (15)" if first_seg else "",
+            showlegend=first_seg,
+            legendgroup="bb_trade",
+        ), row=1, col=1)
+        first_seg = False
 
     # Price y-axis: auto-scale
     p_lo_d = float(display["Low"].min())  if "Low"  in display.columns else float(display["Close"].min())
@@ -693,12 +751,12 @@ def build_stats(df_daily, ticker, is_mf):
     bb_bull = bool(df_daily["BB_Bull"].iloc[-1])
     hurst  = round(float(df_daily["BB_Hurst"].iloc[-1]), 2) if not np.isnan(df_daily["BB_Hurst"].iloc[-1]) else None
 
-    # EMA signals
-    ema21  = float(df_daily["EMA21"].iloc[-1])
-    ema63  = float(df_daily["EMA63"].iloc[-1])
-    ema200 = float(df_daily["EMA200"].iloc[-1])
-    trade  = trade_trend_signal(last, ema21)
-    trend  = trade_trend_signal(last, ema63)
+    # Trade/Trend signals — now use Bridge Bands Donchian lines, not EMAs
+    bb_trade_val = float(df_daily["BB_Trade"].iloc[-1])
+    bb_trend_val = float(df_daily["BB_Trend"].iloc[-1])
+    ema200       = float(df_daily["EMA200"].iloc[-1])
+    trade  = trade_trend_signal(last, bb_trade_val)
+    trend  = trade_trend_signal(last, bb_trend_val)
     opinion = opinion_signal(trade, trend)
     sma200_pct = round((last - ema200) / ema200 * 100, 1)
 
@@ -781,8 +839,8 @@ def build_stats_panel(s):
             html.Span(f"  ${s['last']}", style={"fontSize": "13px", "color": C["text"]}),
         ], style={"marginBottom": "10px"}),
 
-        _sig_row("Trade  (EMA 21)",  s["trade"]),
-        _sig_row("Trend  (EMA 63)",  s["trend"]),
+        _sig_row("Trade  (15)",   s["trade"]),
+        _sig_row("Trend  (63)",   s["trend"]),
         _sig_row("Opinion",          s["opinion"]),
         html.Div(style=div),
 
@@ -831,13 +889,11 @@ def _leg_item(color, label, shape="square"):
                     style={"display": "flex", "alignItems": "center", "gap": "4px"})
 
 LEGEND_ITEMS = [
-    _leg_item(C["price"],    "Price",    "square"),
-    _leg_item("#93c5fd",     "EMA 21",   "line"),
-    _leg_item("#f97316",     "EMA 63",   "line"),
-    _leg_item(C["bb_bull"],  "BB Bull",  "line"),
-    _leg_item(C["bb_bear"],  "BB Bear",  "line"),
-    _leg_item(C["vol_up"],   "Vol+",     "square"),
-    _leg_item(C["vol_dn"],   "Vol-",     "square"),
+    _leg_item(C["price"],    "Price",       "square"),
+    _leg_item(C["bb_bull"],  "Bull band",   "line"),
+    _leg_item(C["bb_bear"],  "Bear band",   "line"),
+    _leg_item(C["vol_up"],   "Vol+",        "square"),
+    _leg_item(C["vol_dn"],   "Vol-",        "square"),
 ]
 
 def _tog_style(active):
