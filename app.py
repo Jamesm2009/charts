@@ -475,12 +475,15 @@ def build_chart(df, ticker, is_weekly, is_mf, show_rv, show_stoch):
                 x=idx, y=vol_h, name="Volume",
                 marker_color=vol_colors, marker_line_width=0,
                 base=p_lo, opacity=0.55, showlegend=True,
+                customdata=display["Volume"].values,
+                hovertemplate="Volume: %{customdata:,.0f}<extra></extra>",
             ), row=1, col=1, secondary_y=False)
             vol_ma21      = display["Volume"].rolling(21).mean()
             vol_ma21_norm = (vol_ma21 / v_max) * (p_range * 0.20)
             fig.add_trace(go.Scatter(
                 x=idx, y=vol_ma21_norm + p_lo, name="Vol MA21",
                 line=dict(color="#f97316", width=1), showlegend=True,
+                hoverinfo="skip",
             ), row=1, col=1, secondary_y=False)
 
     # ── Bridge Bands — per-segment color, no fill ────────────────────────────
@@ -519,6 +522,8 @@ def build_chart(df, ticker, is_weekly, is_mf, show_rv, show_stoch):
             name="BB Top" if first_seg else "",
             showlegend=first_seg,
             legendgroup="bb_top",
+            hovertemplate="BB Top: %{y:.2f}<extra></extra>" if first_seg else None,
+            hoverinfo="skip" if not first_seg else None,
         ), row=1, col=1)
         first_seg = False
 
@@ -532,6 +537,8 @@ def build_chart(df, ticker, is_weekly, is_mf, show_rv, show_stoch):
             name="BB Bot" if first_seg else "",
             showlegend=first_seg,
             legendgroup="bb_bot",
+            hovertemplate="BB Bot: %{y:.2f}<extra></extra>" if first_seg else None,
+            hoverinfo="skip" if not first_seg else None,
         ), row=1, col=1)
         first_seg = False
 
@@ -540,6 +547,7 @@ def build_chart(df, ticker, is_weekly, is_mf, show_rv, show_stoch):
         x=idx, y=display["BB_Mid"], name="BB Mid",
         line=dict(color=C["bb_mid"], width=1, dash="dot"),
         showlegend=False,
+        hovertemplate="BB Mid: %{y:.2f}<extra></extra>",
     ), row=1, col=1)
 
     # ── Price candles / line ──────────────────────────────────────────────────
@@ -570,12 +578,11 @@ def build_chart(df, ticker, is_weekly, is_mf, show_rv, show_stoch):
             name="Trend (63)" if first_seg else "",
             showlegend=first_seg,
             legendgroup="bb_trend",
+            hoverinfo="skip",
         ), row=1, col=1)
         first_seg = False
 
-    # ── Trade line (15-period Donchian mid) — bright dots, color = bull/bear ──
-    # Pine uses plot.style_circles; we use mode="markers" with circle markers.
-    # Color per bar: green if close > trade mid, red otherwise.
+    # ── Trade line (15-period Donchian mid) — dots, color = bull/bear ──────────
     trade_arr  = display["BB_Trade"].values
     close_arr  = display["Close"].values
     trade_bull = close_arr >= trade_arr
@@ -585,10 +592,11 @@ def build_chart(df, ticker, is_weekly, is_mf, show_rv, show_stoch):
         fig.add_trace(go.Scatter(
             x=seg_x, y=seg_y,
             mode="markers",
-            marker=dict(color=col, size=4, symbol="circle"),
+            marker=dict(color=col, size=2, symbol="circle"),
             name="Trade (15)" if first_seg else "",
             showlegend=first_seg,
             legendgroup="bb_trade",
+            hoverinfo="skip",
         ), row=1, col=1)
         first_seg = False
 
@@ -639,21 +647,20 @@ def build_chart(df, ticker, is_weekly, is_mf, show_rv, show_stoch):
         marker_color=ms_col,
         marker_line_width=0,
         showlegend=False,
+        hoverinfo="skip",
     ), row=r, col=1)
     fig.add_trace(go.Scatter(
         x=idx, y=display["MS_Resist"], name="MS Resist",
         line=dict(color=C["ms_res"], width=1.2), showlegend=False,
+        hoverinfo="skip",
     ), row=r, col=1)
     fig.add_trace(go.Scatter(
         x=idx, y=display["MS_Support"], name="MS Support",
         line=dict(color=C["ms_sup"], width=1.2), showlegend=False,
+        hoverinfo="skip",
     ), row=r, col=1)
 
     ob_thresh, os_thresh = 200, -200
-    # Offset markers by ~6% of the visible range so they sit clearly above/below bars
-    ms_range  = float(ms_all.max() - ms_all.min()) if len(ms_all) > 0 else 50
-    ms_offset = ms_range * 0.06
-
     ob_y = [float(ms_hi[i]) + ms_offset if up_v[i] > ob_thresh else None for i in range(len(idx))]
     os_y = [float(ms_lo[i]) - ms_offset if dn_v[i] < os_thresh else None for i in range(len(idx))]
     for marker_y, mlabel in [(ob_y, "OB"), (os_y, "OS")]:
@@ -662,9 +669,10 @@ def build_chart(df, ticker, is_weekly, is_mf, show_rv, show_stoch):
             xs, ys = zip(*valid)
             fig.add_trace(go.Scatter(
                 x=list(xs), y=list(ys), name=mlabel, mode="markers",
-                marker=dict(symbol="cross", size=10, color=C["ms_ob"],
-                            line_color=C["ms_ob"], line_width=2),
+                marker=dict(symbol="cross", size=6, color=C["ms_ob"],
+                            line_color=C["ms_ob"], line_width=1),
                 showlegend=False,
+                hoverinfo="skip",
             ), row=r, col=1)
 
     if len(ms_all) > 0:
@@ -717,7 +725,7 @@ def build_chart(df, ticker, is_weekly, is_mf, show_rv, show_stoch):
                      tickfont=dict(size=9, color=C["muted"]))
     fig.update_xaxes(showgrid=False, rangeslider_visible=False)
 
-    label = "Weekly 3Yr" if is_weekly else "Daily 8Mnth"
+    label = "Weekly 3Y" if is_weekly else "Daily 8M"
     fig.update_layout(
         height=720,
         template="plotly_dark",
