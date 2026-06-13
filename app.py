@@ -429,7 +429,7 @@ def build_chart(df, ticker, is_weekly, is_mf, show_rv, show_stoch):
       5. StochRSI — optional toggle
     """
     has_vol = (not is_mf) and ("Volume" in df.columns) and (df["Volume"].sum() > 0)
-    display = df.tail(260 if is_weekly else 168)
+    display = df.tail(156 if is_weekly else 168)
     idx     = display.index
 
     row_labels  = ["price"]
@@ -717,7 +717,7 @@ def build_chart(df, ticker, is_weekly, is_mf, show_rv, show_stoch):
                      tickfont=dict(size=9, color=C["muted"]))
     fig.update_xaxes(showgrid=False, rangeslider_visible=False)
 
-    label = "Weekly 5Y" if is_weekly else "Daily 8M"
+    label = "Weekly 3Yr" if is_weekly else "Daily 8Mnth"
     fig.update_layout(
         height=720,
         template="plotly_dark",
