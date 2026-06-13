@@ -614,23 +614,31 @@ def build_chart(df, ticker, is_weekly, is_mf, show_rv, show_stoch):
                          row=r, col=1)
 
     # ── Matrix Series panel — always shown ───────────────────────────────────
+    # Pine color rule: green when up > down, red when up <= down.
+    # go.Candlestick can't do per-bar color — it uses increasing/decreasing
+    # based on close vs open. Since MS_Close = max(up,down) is always >= open,
+    # every bar would render as "increasing" (all green). Instead we use go.Bar
+    # with explicit per-bar colors, base=min(up,down), height=abs(up-down).
     r    = row("ms")
-    ms_o = display["MS_Open"].values
-    ms_c = display["MS_Close"].values
-    ms_h = ms_c
-    ms_l = ms_o
     up_v = display["MS_Up"].values
     dn_v = display["MS_Down"].values
+    ms_lo  = np.minimum(up_v, dn_v)
+    ms_hi  = np.maximum(up_v, dn_v)
+    ms_ht  = ms_hi - ms_lo
+    ms_col = [C["ms_bull"] if u > d else C["ms_bear"]
+              for u, d in zip(up_v, dn_v)]
 
-    fig.add_trace(go.Candlestick(
-        x=idx,
-        open=ms_o, high=ms_h, low=ms_l, close=ms_c,
+    # Compute range up front — needed for marker offset and y-axis
+    ms_all    = np.concatenate([ms_hi[~np.isnan(ms_hi)], ms_lo[~np.isnan(ms_lo)]])
+    ms_range  = float(ms_all.max() - ms_all.min()) if len(ms_all) > 0 else 50
+    ms_offset = ms_range * 0.06
+
+    fig.add_trace(go.Bar(
+        x=idx, y=ms_ht, base=ms_lo,
         name="Matrix",
-        increasing_line_color=C["ms_bull"],
-        decreasing_line_color=C["ms_bear"],
-        increasing_fillcolor=C["ms_bull"],
-        decreasing_fillcolor=C["ms_bear"],
-        whiskerwidth=0,
+        marker_color=ms_col,
+        marker_line_width=0,
+        showlegend=False,
     ), row=r, col=1)
     fig.add_trace(go.Scatter(
         x=idx, y=display["MS_Resist"], name="MS Resist",
@@ -642,21 +650,25 @@ def build_chart(df, ticker, is_weekly, is_mf, show_rv, show_stoch):
     ), row=r, col=1)
 
     ob_thresh, os_thresh = 200, -200
-    ob_y = [float(ms_h[i]) + 8 if up_v[i] > ob_thresh else None for i in range(len(idx))]
-    os_y = [float(ms_l[i]) - 8 if dn_v[i] < os_thresh else None for i in range(len(idx))]
+    # Offset markers by ~6% of the visible range so they sit clearly above/below bars
+    ms_range  = float(ms_all.max() - ms_all.min()) if len(ms_all) > 0 else 50
+    ms_offset = ms_range * 0.06
+
+    ob_y = [float(ms_hi[i]) + ms_offset if up_v[i] > ob_thresh else None for i in range(len(idx))]
+    os_y = [float(ms_lo[i]) - ms_offset if dn_v[i] < os_thresh else None for i in range(len(idx))]
     for marker_y, mlabel in [(ob_y, "OB"), (os_y, "OS")]:
         valid = [(idx[i], marker_y[i]) for i in range(len(idx)) if marker_y[i] is not None]
         if valid:
             xs, ys = zip(*valid)
             fig.add_trace(go.Scatter(
                 x=list(xs), y=list(ys), name=mlabel, mode="markers",
-                marker=dict(symbol="x", size=8, color=C["ms_ob"], line_width=2),
+                marker=dict(symbol="cross", size=10, color=C["ms_ob"],
+                            line_color=C["ms_ob"], line_width=2),
                 showlegend=False,
             ), row=r, col=1)
 
-    ms_all = np.concatenate([ms_h[~np.isnan(ms_h)], ms_l[~np.isnan(ms_l)]])
     if len(ms_all) > 0:
-        ms_pad = (ms_all.max() - ms_all.min()) * 0.15
+        ms_pad = ms_range * 0.15
         fig.update_yaxes(
             range=[ms_all.min() - ms_pad, ms_all.max() + ms_pad],
             title_text="Matrix", title_font=dict(size=9, color=C["muted"]),
