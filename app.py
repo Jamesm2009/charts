@@ -59,25 +59,39 @@ REDIS_TTL_WEEKLY = 21600
 os.makedirs(CACHE_DIR, exist_ok=True)
 
 C = {
-    "price":   "#4a9eff",
-    "ema21":   "#93c5fd",
-    "ema63":   "#f97316",
-    "bb_band": "rgba(160,160,170,0.40)",
-    "bb_fill": "rgba(160,160,170,0.06)",
-    "mom_pos": "rgba(52,211,153,0.28)",
-    "mom_neg": "rgba(248,113,113,0.28)",
-    "vol_up":  "rgba(52,211,153,0.50)",
-    "vol_dn":  "rgba(248,113,113,0.50)",
-    "rv":      "#a78bfa",
-    "stoch_k": "#60a5fa",
-    "stoch_d": "#f87171",
-    "ob":      "#f87171",
-    "os_":     "#34d399",
-    "bg":      "#0d1117",
-    "panel":   "#161b22",
-    "border":  "#30363d",
-    "text":    "#e6edf3",
-    "muted":   "#8b949e",
+    "price":    "#4a9eff",
+    "ema21":    "#93c5fd",
+    "ema63":    "#f97316",
+    # Bridge Bands
+    "bb_bull":  "#34d399",              # bullish band outline + fill tint
+    "bb_bear":  "#f87171",              # bearish band outline + fill tint
+    "bb_fill_bull": "rgba(52,211,153,0.07)",
+    "bb_fill_bear": "rgba(248,113,113,0.07)",
+    "bb_mid":   "rgba(160,160,170,0.55)",
+    # Momentum overlay
+    "mom_pos":  "rgba(52,211,153,0.28)",
+    "mom_neg":  "rgba(248,113,113,0.28)",
+    # Volume
+    "vol_up":   "rgba(52,211,153,0.50)",
+    "vol_dn":   "rgba(248,113,113,0.50)",
+    # Sub-panels
+    "rv":       "#a78bfa",
+    "stoch_k":  "#60a5fa",
+    "stoch_d":  "#f87171",
+    "ob":       "#f87171",
+    "os_":      "#34d399",
+    # Matrix Series
+    "ms_bull":  "#34d399",
+    "ms_bear":  "#f87171",
+    "ms_res":   "#34d399",
+    "ms_sup":   "#f87171",
+    "ms_ob":    "#22d3ee",
+    # Chrome
+    "bg":       "#0d1117",
+    "panel":    "#161b22",
+    "border":   "#30363d",
+    "text":     "#e6edf3",
+    "muted":    "#8b949e",
 }
 
 # ── Redis ─────────────────────────────────────────────────────────────────────
@@ -195,31 +209,136 @@ def get_morningstar_url(ticker, is_mf):
     return f"https://www.morningstar.com/etfs/arcx/{t}/quote"
 
 # ── Indicators ────────────────────────────────────────────────────────────────
+
+def _wilder_rma(series, length):
+    """Wilder's RMA (= Pine's rma()): EWM with alpha=1/length, adjust=False."""
+    return series.ewm(alpha=1.0 / length, adjust=False).mean()
+
+def _wma(series, length):
+    """Linearly-weighted moving average matching Pine's wma()."""
+    weights = np.arange(1, length + 1, dtype=float)
+    return series.rolling(length).apply(lambda x: np.dot(x, weights) / weights.sum(), raw=True)
+
+def calc_bridge_bands(close, high, low, length=15, trend_length=63):
+    """
+    Bridge Bands — translated from Pine Script v4 by calebsandfort.
+
+    Core idea: start with a WMA-based Bollinger Band, then interpolate it
+    toward a linear-regression price channel by abs(Hurst×2 - 1).
+    When Hurst ≈ 0.5 (random walk) the bands stay at standard BB width.
+    When the market is strongly trending or mean-reverting they widen toward
+    the price channel, giving a volatility-adjusted, regime-aware envelope.
+
+    Returns a dict of Series: top, bottom, mid, top_mid, bottom_mid,
+    trend_line, bull (bool Series), and hurst.
+    """
+    n = len(close)
+    lm1 = length - 1  # lengthMinus1
+
+    # ── Slope of the regression line (per-bar, rolling) ───────────────────────
+    # slope[t] = (close[t] - close[t - lm1]) / lm1
+    slope = (close - close.shift(lm1)) / lm1
+
+    # ── Bridge range: min/max deviation of each bar from the trend line ───────
+    # For bar t, trend_line_at_i = close[t] + slope[t] * (t - i)
+    # i iterates from t back to t - lm1 (Pine's "0 to n" with shifted indexing)
+    min_diff = pd.Series(np.nan, index=close.index)
+    max_diff = pd.Series(np.nan, index=close.index)
+
+    close_arr = close.values
+    slope_arr = slope.values
+
+    for t in range(lm1, n):
+        m_min =  1e9
+        m_max = -1e9
+        s = slope_arr[t]
+        c0 = close_arr[t]
+        for i in range(lm1 + 1):          # i = 0 … lm1 (Pine: n - i in reversed order)
+            val = close_arr[t - i] - (c0 + s * i)
+            if val < m_min:
+                m_min = val
+            if val > m_max:
+                m_max = val
+        min_diff.iloc[t] = m_min
+        max_diff.iloc[t] = m_max
+
+    bridge_bottom = close + min_diff   # = close + most-negative deviation
+    bridge_top    = close + max_diff   # = close + most-positive deviation
+
+    # ── ATR (Wilder) ──────────────────────────────────────────────────────────
+    tr = pd.concat([
+        high - low,
+        (high - close.shift(1)).abs(),
+        (low  - close.shift(1)).abs(),
+    ], axis=1).max(axis=1)
+    atr = _wilder_rma(tr, length)
+
+    # ── Hurst exponent proxy ──────────────────────────────────────────────────
+    # hurst = log(highest_high - lowest_low) - log(ATR)) / log(length)
+    hi_lo_range = high.rolling(length).max() - low.rolling(length).min()
+    log_len = np.log(length)
+    hurst = (np.log(hi_lo_range.clip(lower=1e-10)) - np.log(atr.clip(lower=1e-10))) / log_len
+
+    # ── WMA-based Bollinger Bands ─────────────────────────────────────────────
+    wma_c  = _wma(close, length)
+    sd     = close.rolling(length).std()
+    bb_top    = wma_c + sd * 2
+    bb_bottom = wma_c - sd * 2
+
+    # ── Bridge Bands: interpolate BB toward bridge range by |hurst×2 - 1| ────
+    h_factor = (hurst * 2 - 1).abs()
+    bb_top_final    = bb_top    - (bb_top    - bridge_top)    * h_factor
+    bb_bottom_final = bb_bottom + (bridge_bottom - bb_bottom) * h_factor
+    bb_mid          = (bb_top_final + bb_bottom_final) / 2
+    bb_top_mid      = bb_mid    + (bb_top_final - bb_mid)    / 2
+    bb_bottom_mid   = bb_bottom_final + (bb_mid - bb_bottom_final) / 2
+
+    # ── Trend signal: Donchian midpoint of trendLength bars ──────────────────
+    trend_line = (low.rolling(trend_length).min() +
+                  (high.rolling(trend_length).max() - low.rolling(trend_length).min()) / 2)
+    bull = close >= trend_line
+
+    return {
+        "top":        bb_top_final,
+        "bottom":     bb_bottom_final,
+        "mid":        bb_mid,
+        "top_mid":    bb_top_mid,
+        "bottom_mid": bb_bottom_mid,
+        "trend":      trend_line,
+        "bull":       bull,
+        "hurst":      hurst,
+    }
+
 def apply_all(df):
     df = df.copy()
     close = df["Close"]
-    # BB bands (volume-adjusted if available)
-    mid = close.rolling(21).mean()
-    std = close.rolling(21).std()
-    has_vol = "Volume" in df.columns and df["Volume"].sum() > 0
-    if has_vol:
-        vol_rat = (df["Volume"] / df["Volume"].rolling(20).mean()).rolling(5).mean().fillna(1)
-        adj = std * vol_rat
-    else:
-        adj = std
-    df["BB_Mid"]   = mid
-    df["BB_Upper"] = mid + 2.0 * adj
-    df["BB_Lower"] = mid - 2.0 * adj
-    # EMAs
+    high  = df["High"]
+    low   = df["Low"]
+
+    # ── Bridge Bands (replaces Bollinger Bands on price chart) ───────────────
+    bb = calc_bridge_bands(close, high, low, length=15, trend_length=63)
+    df["BB_Upper"]     = bb["top"]
+    df["BB_Lower"]     = bb["bottom"]
+    df["BB_Mid"]       = bb["mid"]
+    df["BB_TopMid"]    = bb["top_mid"]
+    df["BB_BottomMid"] = bb["bottom_mid"]
+    df["BB_Trend"]     = bb["trend"]
+    df["BB_Bull"]      = bb["bull"]
+    df["BB_Hurst"]     = bb["hurst"]
+
+    # ── EMAs ─────────────────────────────────────────────────────────────────
     df["EMA21"]  = close.ewm(span=21,  adjust=False).mean()
     df["EMA63"]  = close.ewm(span=63,  adjust=False).mean()
     df["EMA200"] = close.ewm(span=200, adjust=False).mean()
-    # Momentum: (5D MA / 63D MA - 1) * 100
+
+    # ── Momentum overlay: (5D MA / 63D MA - 1) × 100 ────────────────────────
     df["Mom_Pct"] = ((close.rolling(5).mean() / close.rolling(63).mean()) - 1) * 100
-    # Realized vol annualised
+
+    # ── Realized vol annualised ───────────────────────────────────────────────
     lr = np.log(close / close.shift(1))
     df["RV"] = lr.rolling(21).std() * np.sqrt(252) * 100
-    # Stochastic RSI
+
+    # ── Stochastic RSI ────────────────────────────────────────────────────────
     delta  = close.diff()
     ma_up  = delta.clip(lower=0).ewm(alpha=1/14, adjust=False).mean()
     ma_dn  = (-delta.clip(upper=0)).ewm(alpha=1/14, adjust=False).mean()
@@ -228,8 +347,37 @@ def apply_all(df):
     stoch  = (rsi - lo14) / (hi14 - lo14 + 1e-10) * 100
     df["StochRSI_K"] = stoch.rolling(3).mean()
     df["StochRSI_D"] = df["StochRSI_K"].rolling(3).mean()
-    # Rate of Change — 12 month YoY (252 trading days)
+
+    # ── Rate of Change — 12 month YoY (252 trading days) ────────────────────
     df["RoC_YoY"] = close.pct_change(252) * 100
+
+    # ── Matrix Series ─────────────────────────────────────────────────────────
+    # Translated from Pine Script v3 by wisestocktrader.com
+    nn  = 5
+    ys1 = (high + low + close * 2) / 4
+    rk3 = ys1.ewm(span=nn, adjust=False).mean()
+    rk4 = ys1.rolling(nn).std()
+    rk5 = (ys1 - rk3) * 200 / (rk4 + 1e-10)
+    rk6 = rk5.ewm(span=nn, adjust=False).mean()
+    up   = rk6.ewm(span=nn, adjust=False).mean()
+    down = up.ewm(span=nn, adjust=False).mean()
+    df["MS_Up"]    = up
+    df["MS_Down"]  = down
+    df["MS_Open"]  = np.minimum(up, down)
+    df["MS_Close"] = np.maximum(up, down)
+
+    # CCI-based dynamic S/R for Matrix panel
+    pds     = 16
+    tp      = (high + low + close) / 3
+    tp_sma  = tp.rolling(pds).mean()
+    tp_mad  = tp.rolling(pds).apply(lambda x: np.abs(x - x.mean()).mean(), raw=True)
+    cci     = (tp - tp_sma) / (0.015 * tp_mad + 1e-10)
+    hi_cci  = cci.rolling(50).max()
+    lo_cci  = cci.rolling(50).min()
+    rng_cci = hi_cci - lo_cci
+    df["MS_Resist"]  = lo_cci + rng_cci
+    df["MS_Support"] = hi_cci - rng_cci
+
     return df
 
 def calc_zscore(df):
@@ -266,7 +414,15 @@ def sig_bg(sig):
             "Neutral": "rgba(139,148,158,0.12)"}[sig]
 
 # ── Chart ─────────────────────────────────────────────────────────────────────
-def build_chart(df, ticker, is_weekly, is_mf, show_rv, show_roc):
+def build_chart(df, ticker, is_weekly, is_mf, show_rv, show_stoch):
+    """
+    Panel order (top → bottom):
+      1. Price    — always (Bridge Bands, EMAs, volume)
+      2. RV       — optional toggle
+      3. Matrix   — always (synthetic candle momentum oscillator)
+      4. Mom      — always (5D/63D momentum bar chart)
+      5. StochRSI — optional toggle
+    """
     has_vol = (not is_mf) and ("Volume" in df.columns) and (df["Volume"].sum() > 0)
     display = df.tail(260 if is_weekly else 252)
     idx     = display.index
@@ -276,16 +432,18 @@ def build_chart(df, ticker, is_weekly, is_mf, show_rv, show_roc):
     if show_rv:
         row_labels.append("rv")
         row_heights.append(0.20)
-    row_labels.append("stoch")
-    row_heights.append(0.20)
-    if show_roc:
-        row_labels.append("roc")
-        row_heights.append(0.16)
+    row_labels.append("ms")
+    row_heights.append(0.28)
+    row_labels.append("mom")
+    row_heights.append(0.16)
+    if show_stoch:
+        row_labels.append("stoch")
+        row_heights.append(0.20)
 
     total   = sum(row_heights)
     heights = [h / total for h in row_heights]
     n_rows  = len(row_labels)
-    specs   = [[{"secondary_y": True}]] + [[{"secondary_y": False}]] * (n_rows - 1)
+    specs   = [[{"secondary_y": False}]] * n_rows
 
     fig = make_subplots(
         rows=n_rows, cols=1,
@@ -298,15 +456,7 @@ def build_chart(df, ticker, is_weekly, is_mf, show_rv, show_roc):
     def row(lbl):
         return row_labels.index(lbl) + 1
 
-    # Momentum bars — secondary y, heavily compressed so they're subtle
-    mom = display["Mom_Pct"].fillna(0)
-    mom_colors = [C["mom_pos"] if v >= 0 else C["mom_neg"] for v in mom]
-    fig.add_trace(go.Bar(
-        x=idx, y=mom, name="Momentum",
-        marker_color=mom_colors, marker_line_width=0, showlegend=True,
-    ), row=1, col=1, secondary_y=True)
-
-    # Volume — normalised to bottom 20% of price range
+    # ── Volume bars + MA21 ────────────────────────────────────────────────────
     if has_vol:
         p_lo    = float(display["Low"].min())
         p_hi    = float(display["High"].max())
@@ -321,25 +471,44 @@ def build_chart(df, ticker, is_weekly, is_mf, show_rv, show_roc):
                 marker_color=vol_colors, marker_line_width=0,
                 base=p_lo, opacity=0.55, showlegend=True,
             ), row=1, col=1, secondary_y=False)
-            vol_ma21 = display["Volume"].rolling(21).mean()
+            vol_ma21      = display["Volume"].rolling(21).mean()
             vol_ma21_norm = (vol_ma21 / v_max) * (p_range * 0.20)
             fig.add_trace(go.Scatter(
                 x=idx, y=vol_ma21_norm + p_lo, name="Vol MA21",
                 line=dict(color="#f97316", width=1), showlegend=True,
             ), row=1, col=1, secondary_y=False)
 
-    # BB bands
+    # ── Bridge Bands ──────────────────────────────────────────────────────────
+    # Colour follows the trend signal (close vs Donchian-63 midpoint)
+    bull_series = display["BB_Bull"].fillna(True)
+    # We draw the band with the last bar's colour for simplicity —
+    # a single fill between top/bottom uses one colour.
+    # To show the colour change we use a scatter with the dominant recent signal.
+    last_bull = bool(bull_series.iloc[-1])
+    band_col  = C["bb_bull"] if last_bull else C["bb_bear"]
+    fill_col  = C["bb_fill_bull"] if last_bull else C["bb_fill_bear"]
+
+    # Top band
     fig.add_trace(go.Scatter(
-        x=idx, y=display["BB_Upper"], name="BB",
-        line=dict(color=C["bb_band"], width=1, dash="dot"), showlegend=True,
+        x=idx, y=display["BB_Upper"], name="BB Top",
+        line=dict(color=band_col, width=1.5),
+        showlegend=True,
     ), row=1, col=1, secondary_y=False)
+    # Bottom band — fill back to top
     fig.add_trace(go.Scatter(
-        x=idx, y=display["BB_Lower"], name="BB Lower",
-        line=dict(color=C["bb_band"], width=1, dash="dot"),
-        fill="tonexty", fillcolor=C["bb_fill"], showlegend=False,
+        x=idx, y=display["BB_Lower"], name="BB Bot",
+        line=dict(color=band_col, width=1.5),
+        fill="tonexty", fillcolor=fill_col,
+        showlegend=False,
+    ), row=1, col=1, secondary_y=False)
+    # Mid line (subtle dashed)
+    fig.add_trace(go.Scatter(
+        x=idx, y=display["BB_Mid"], name="BB Mid",
+        line=dict(color=C["bb_mid"], width=1, dash="dot"),
+        showlegend=False,
     ), row=1, col=1, secondary_y=False)
 
-    # Price
+    # ── Price candles / line ──────────────────────────────────────────────────
     if not is_mf:
         fig.add_trace(go.Candlestick(
             x=idx,
@@ -355,7 +524,7 @@ def build_chart(df, ticker, is_weekly, is_mf, show_rv, show_roc):
             line=dict(color=C["price"], width=2),
         ), row=1, col=1, secondary_y=False)
 
-    # EMAs
+    # ── EMAs ─────────────────────────────────────────────────────────────────
     fig.add_trace(go.Scatter(
         x=idx, y=display["EMA21"], name="EMA 21",
         line=dict(color="#93c5fd", width=1.5),
@@ -372,18 +541,10 @@ def build_chart(df, ticker, is_weekly, is_mf, show_rv, show_roc):
     fig.update_yaxes(
         range=[p_lo_d - p_pad, p_hi_d + p_pad],
         title_text="Price", title_font=dict(size=9, color=C["muted"]),
-        row=1, col=1, secondary_y=False,
+        row=1, col=1,
     )
 
-    # Momentum secondary y: heavily compressed
-    mom_abs = float(mom.abs().max()) if mom.abs().max() > 0 else 5
-    fig.update_yaxes(
-        range=[-mom_abs * 1.4, mom_abs * 1.4],
-        showticklabels=False, showgrid=False, zeroline=False,
-        row=1, col=1, secondary_y=True,
-    )
-
-    # RV panel
+    # ── RV panel ─────────────────────────────────────────────────────────────
     if show_rv:
         r = row("rv")
         fig.add_trace(go.Scatter(
@@ -394,35 +555,88 @@ def build_chart(df, ticker, is_weekly, is_mf, show_rv, show_roc):
         fig.update_yaxes(title_text="RV %", title_font=dict(size=9, color=C["muted"]),
                          row=r, col=1)
 
-    # StochRSI panel
-    r = row("stoch")
-    fig.add_trace(go.Scatter(
-        x=idx, y=display["StochRSI_K"], name="%K",
-        line=dict(color=C["stoch_k"], width=1.5),
-    ), row=r, col=1)
-    fig.add_trace(go.Scatter(
-        x=idx, y=display["StochRSI_D"], name="%D",
-        line=dict(color=C["stoch_d"], width=1.5),
-    ), row=r, col=1)
-    fig.add_hline(y=80, line_dash="dot", line_color=C["ob"],  line_width=1, row=r, col=1)
-    fig.add_hline(y=20, line_dash="dot", line_color=C["os_"], line_width=1, row=r, col=1)
-    fig.update_yaxes(title_text="StochRSI", title_font=dict(size=9, color=C["muted"]),
-                     range=[0, 100], row=r, col=1)
+    # ── Matrix Series panel — always shown ───────────────────────────────────
+    r    = row("ms")
+    ms_o = display["MS_Open"].values
+    ms_c = display["MS_Close"].values
+    ms_h = ms_c
+    ms_l = ms_o
+    up_v = display["MS_Up"].values
+    dn_v = display["MS_Down"].values
 
-    # RoC YoY panel
-    if show_roc:
-        r = row("roc")
-        roc_vals   = display["RoC_YoY"].fillna(0)
-        roc_colors = [C["mom_pos"] if v >= 0 else C["mom_neg"] for v in roc_vals]
-        fig.add_trace(go.Bar(
-            x=idx, y=roc_vals, name="RoC YoY",
-            marker_color=roc_colors, marker_line_width=0,
-        ), row=r, col=1)
-        fig.add_hline(y=0, line_color=C["muted"], line_width=0.8, row=r, col=1)
-        fig.update_yaxes(title_text="YoY %", title_font=dict(size=9, color=C["muted"]),
+    fig.add_trace(go.Candlestick(
+        x=idx,
+        open=ms_o, high=ms_h, low=ms_l, close=ms_c,
+        name="Matrix",
+        increasing_line_color=C["ms_bull"],
+        decreasing_line_color=C["ms_bear"],
+        increasing_fillcolor=C["ms_bull"],
+        decreasing_fillcolor=C["ms_bear"],
+        whiskerwidth=0,
+    ), row=r, col=1)
+    fig.add_trace(go.Scatter(
+        x=idx, y=display["MS_Resist"], name="MS Resist",
+        line=dict(color=C["ms_res"], width=1.2), showlegend=False,
+    ), row=r, col=1)
+    fig.add_trace(go.Scatter(
+        x=idx, y=display["MS_Support"], name="MS Support",
+        line=dict(color=C["ms_sup"], width=1.2), showlegend=False,
+    ), row=r, col=1)
+
+    ob_thresh, os_thresh = 200, -200
+    ob_y = [float(ms_h[i]) + 8 if up_v[i] > ob_thresh else None for i in range(len(idx))]
+    os_y = [float(ms_l[i]) - 8 if dn_v[i] < os_thresh else None for i in range(len(idx))]
+    for marker_y, mlabel in [(ob_y, "OB"), (os_y, "OS")]:
+        valid = [(idx[i], marker_y[i]) for i in range(len(idx)) if marker_y[i] is not None]
+        if valid:
+            xs, ys = zip(*valid)
+            fig.add_trace(go.Scatter(
+                x=list(xs), y=list(ys), name=mlabel, mode="markers",
+                marker=dict(symbol="x", size=8, color=C["ms_ob"], line_width=2),
+                showlegend=False,
+            ), row=r, col=1)
+
+    ms_all = np.concatenate([ms_h[~np.isnan(ms_h)], ms_l[~np.isnan(ms_l)]])
+    if len(ms_all) > 0:
+        ms_pad = (ms_all.max() - ms_all.min()) * 0.15
+        fig.update_yaxes(
+            range=[ms_all.min() - ms_pad, ms_all.max() + ms_pad],
+            title_text="Matrix", title_font=dict(size=9, color=C["muted"]),
+            row=r, col=1,
+        )
+    else:
+        fig.update_yaxes(title_text="Matrix", title_font=dict(size=9, color=C["muted"]),
                          row=r, col=1)
 
-    # X-axis dates: show on price panel and bottom panel
+    # ── Momentum bar panel — always shown below Matrix ────────────────────────
+    r = row("mom")
+    mom      = display["Mom_Pct"].fillna(0)
+    mom_cols = [C["mom_pos"] if v >= 0 else C["mom_neg"] for v in mom]
+    fig.add_trace(go.Bar(
+        x=idx, y=mom, name="Momentum",
+        marker_color=mom_cols, marker_line_width=0,
+    ), row=r, col=1)
+    fig.add_hline(y=0, line_color=C["muted"], line_width=0.8, row=r, col=1)
+    fig.update_yaxes(title_text="Mom %", title_font=dict(size=9, color=C["muted"]),
+                     row=r, col=1)
+
+    # ── StochRSI panel — optional ─────────────────────────────────────────────
+    if show_stoch:
+        r = row("stoch")
+        fig.add_trace(go.Scatter(
+            x=idx, y=display["StochRSI_K"], name="%K",
+            line=dict(color=C["stoch_k"], width=1.5),
+        ), row=r, col=1)
+        fig.add_trace(go.Scatter(
+            x=idx, y=display["StochRSI_D"], name="%D",
+            line=dict(color=C["stoch_d"], width=1.5),
+        ), row=r, col=1)
+        fig.add_hline(y=80, line_dash="dot", line_color=C["ob"],  line_width=1, row=r, col=1)
+        fig.add_hline(y=20, line_dash="dot", line_color=C["os_"], line_width=1, row=r, col=1)
+        fig.update_yaxes(title_text="StochRSI", title_font=dict(size=9, color=C["muted"]),
+                         range=[0, 100], row=r, col=1)
+
+    # X-axis: show ticks on price panel and bottom panel only
     for r_idx in range(1, n_rows + 1):
         show = (r_idx == 1 or r_idx == n_rows)
         fig.update_xaxes(showticklabels=show,
@@ -441,7 +655,7 @@ def build_chart(df, ticker, is_weekly, is_mf, show_rv, show_roc):
         plot_bgcolor="#0d1117",
         font=dict(family="IBM Plex Mono", color=C["text"]),
         margin=dict(l=58, r=12, t=36, b=8),
-        showlegend=False,   # legend moved to toggle bar
+        showlegend=False,
         hovermode="x unified",
         hoverlabel=dict(bgcolor=C["panel"], font_size=11),
         title=dict(
@@ -461,34 +675,34 @@ def pct_n(df, n):
     return round((df["Close"].iloc[-1] - df["Close"].iloc[-1-n]) / df["Close"].iloc[-1-n] * 100, 2)
 
 def build_stats(df_daily, ticker, is_mf):
-    """Always uses daily df for all calculations."""
-    z     = calc_zscore(df_daily)
-    last  = round(float(df_daily["Close"].iloc[-1]), 2)
+    """Always uses daily df for all stats calculations."""
+    z    = calc_zscore(df_daily)
+    last = round(float(df_daily["Close"].iloc[-1]), 2)
 
-    # 12M Hi/Lo using daily data
-    win   = df_daily["Close"].tail(252)
-    hi12  = round(float(win.max()), 2)
-    lo12  = round(float(win.min()), 2)
+    # 12M Hi/Lo
+    win  = df_daily["Close"].tail(252)
+    hi12 = round(float(win.max()), 2)
+    lo12 = round(float(win.min()), 2)
     vs_lo = round((last - lo12) / lo12 * 100, 1) if lo12 else None
 
-    # BB distance from current price
+    # Bridge Bands distance from current price
     bb_upper = round(float(df_daily["BB_Upper"].iloc[-1]), 2)
     bb_lower = round(float(df_daily["BB_Lower"].iloc[-1]), 2)
     bb_up  = round((bb_upper - last) / last * 100, 1) if last else None
     bb_dn  = round((bb_lower - last) / last * 100, 1) if last else None
+    bb_bull = bool(df_daily["BB_Bull"].iloc[-1])
+    hurst  = round(float(df_daily["BB_Hurst"].iloc[-1]), 2) if not np.isnan(df_daily["BB_Hurst"].iloc[-1]) else None
 
-    # Signals using daily data with 0.99 neutral buffer
+    # EMA signals
     ema21  = float(df_daily["EMA21"].iloc[-1])
     ema63  = float(df_daily["EMA63"].iloc[-1])
     ema200 = float(df_daily["EMA200"].iloc[-1])
     trade  = trade_trend_signal(last, ema21)
     trend  = trade_trend_signal(last, ema63)
     opinion = opinion_signal(trade, trend)
-
-    # vs EMA200
     sma200_pct = round((last - ema200) / ema200 * 100, 1)
 
-    # RV 1M only
+    # RV 1M
     rv1m = round(float(df_daily["RV"].tail(21).mean()), 1)
 
     # Performance
@@ -497,7 +711,7 @@ def build_stats(df_daily, ticker, is_mf):
     return dict(ticker=ticker, last=last, z=z,
                 trade=trade, trend=trend, opinion=opinion,
                 hi12=hi12, lo12=lo12, vs_lo=vs_lo,
-                bb_up=bb_up, bb_dn=bb_dn,
+                bb_up=bb_up, bb_dn=bb_dn, bb_bull=bb_bull, hurst=hurst,
                 sma200=sma200_pct, rv1m=rv1m, perf=perf)
 
 def _pc(v):
@@ -553,6 +767,13 @@ def build_stats_panel(s):
             style={"textAlign": "center"}
         )]
 
+    # Bridge Bands outlook pill
+    bb_bull = s.get("bb_bull", True)
+    hurst   = s.get("hurst")
+    bb_out_col = C["bb_bull"] if bb_bull else C["bb_bear"]
+    bb_out_bg  = "rgba(52,211,153,0.12)" if bb_bull else "rgba(248,113,113,0.12)"
+    bb_out_lbl = "BULL" if bb_bull else "BEAR"
+
     return html.Div([
         html.Div([
             html.Span(s["ticker"], style={"fontSize": "18px", "fontWeight": "800",
@@ -568,8 +789,20 @@ def build_stats_panel(s):
         _row("12M High", f"${s['hi12']}"),
         _row("12M Low",  f"${s['lo12']}"),
         _row("vs 12M Low", f"{s['vs_lo']:+.1f}%" if s["vs_lo"] is not None else "—"),
-        _row("BB Upside",   f"{s['bb_up']:+.1f}%"  if s["bb_up"]  is not None else "—", color="#34d399"),
-        _row("BB Downside", f"{s['bb_dn']:+.1f}%"  if s["bb_dn"]  is not None else "—", color="#f87171"),
+        html.Div(style=div),
+
+        # Bridge Bands section
+        html.Div("Bridge Bands", style={"fontSize": "10px", "color": C["muted"], "marginBottom": "5px"}),
+        html.Div([
+            html.Span("Outlook", style={"color": C["muted"], "fontSize": "11px"}),
+            html.Span(bb_out_lbl, style={"color": bb_out_col, "background": bb_out_bg,
+                                          "padding": "2px 7px", "borderRadius": "4px",
+                                          "fontSize": "11px", "fontWeight": "700"}),
+        ], style={"display": "flex", "justifyContent": "space-between",
+                  "alignItems": "center", "marginBottom": "5px"}),
+        _row("BB Upside",   f"{s['bb_up']:+.1f}%"  if s["bb_up"]  is not None else "—", color=C["bb_bull"]),
+        _row("BB Downside", f"{s['bb_dn']:+.1f}%"  if s["bb_dn"]  is not None else "—", color=C["bb_bear"]),
+        _row("Hurst", f"{hurst:.2f}" if hurst is not None else "—"),
         html.Div(style=div),
 
         _row("vs EMA 200", f"{s['sma200']:+.1f}%"),
@@ -598,14 +831,13 @@ def _leg_item(color, label, shape="square"):
                     style={"display": "flex", "alignItems": "center", "gap": "4px"})
 
 LEGEND_ITEMS = [
-    _leg_item(C["price"],  "Price",   "square"),
-    _leg_item("#93c5fd",   "EMA 21",  "line"),
-    _leg_item("#f97316",   "EMA 63",  "line"),
-    _leg_item("rgba(160,160,170,0.6)", "BB",  "line"),
-    _leg_item(C["mom_pos"],"Mom+",    "square"),
-    _leg_item(C["mom_neg"],"Mom-",    "square"),
-    _leg_item(C["vol_up"], "Vol+",    "square"),
-    _leg_item(C["vol_dn"], "Vol-",    "square"),
+    _leg_item(C["price"],    "Price",    "square"),
+    _leg_item("#93c5fd",     "EMA 21",   "line"),
+    _leg_item("#f97316",     "EMA 63",   "line"),
+    _leg_item(C["bb_bull"],  "BB Bull",  "line"),
+    _leg_item(C["bb_bear"],  "BB Bear",  "line"),
+    _leg_item(C["vol_up"],   "Vol+",     "square"),
+    _leg_item(C["vol_dn"],   "Vol-",     "square"),
 ]
 
 def _tog_style(active):
@@ -659,11 +891,9 @@ app.layout = html.Div(style={"background": C["bg"], "minHeight": "100vh"}, child
     # Toggle row + legend
     html.Div([
         html.Span("Show:", style={"color": C["muted"], "fontSize": "11px", "marginRight": "8px"}),
-        html.Button("Realized Vol",   id="toggle-rv",  n_clicks=0, style=_tog_style(False)),
-        html.Button("Rate of Change", id="toggle-roc", n_clicks=0, style=_tog_style(False)),
-        # Spacer
+        html.Button("Realized Vol",   id="toggle-rv",    n_clicks=0, style=_tog_style(False)),
+        html.Button("Stoch RSI",      id="toggle-stoch", n_clicks=0, style=_tog_style(False)),
         html.Div(style={"width": "20px"}),
-        # Static legend
         html.Div(LEGEND_ITEMS,
                  style={"display": "flex", "alignItems": "center", "gap": "12px",
                         "flexWrap": "wrap"}),
@@ -713,25 +943,23 @@ app.layout = html.Div(style={"background": C["bg"], "minHeight": "100vh"}, child
     Input("load-btn",            "n_clicks"),
     Input("timeframe",           "value"),
     Input("toggle-rv",           "n_clicks"),
-    Input("toggle-roc",          "n_clicks"),
+    Input("toggle-stoch",        "n_clicks"),
     State("ticker-input",        "value"),
     State("asset-type",          "value"),
     prevent_initial_call=False,
 )
-def update_chart(n_load, tf, n_rv, n_roc, ticker, asset_type):
-    ticker    = (ticker or "SPY").upper().strip()
-    is_weekly = (tf == "weekly")
-    is_mf     = (asset_type == "mf")
-    show_rv   = (n_rv  % 2 == 1)
-    show_roc  = (n_roc % 2 == 1)
+def update_chart(n_load, tf, n_rv, n_stoch, ticker, asset_type):
+    ticker     = (ticker or "SPY").upper().strip()
+    is_weekly  = (tf == "weekly")
+    is_mf      = (asset_type == "mf")
+    show_rv    = (n_rv    % 2 == 1)
+    show_stoch = (n_stoch % 2 == 1)
 
-    # Always fetch daily data (for stats)
     df_daily, info = fetch_data(ticker, is_weekly=False)
     if df_daily is None or len(df_daily) < 50:
         return go.Figure(), [], [], [html.Span(f"No data for {ticker}",
                                                style={"color": C["ob"]})]
 
-    # Fetch weekly if needed for chart
     if is_weekly:
         df_chart, _ = fetch_data(ticker, is_weekly=True)
         if df_chart is None:
@@ -742,24 +970,27 @@ def update_chart(n_load, tf, n_rv, n_roc, ticker, asset_type):
     df_daily = apply_all(df_daily)
     df_chart = apply_all(df_chart)
 
-    fig   = build_chart(df_chart, ticker, is_weekly, is_mf, show_rv, show_roc)
+    fig   = build_chart(df_chart, ticker, is_weekly, is_mf, show_rv, show_stoch)
     s     = build_stats(df_daily, ticker, is_mf)
     panel = build_stats_panel(s)
 
-    # Asset name + Morningstar link
-    name     = get_asset_name(info)
-    ms_url   = get_morningstar_url(ticker, is_mf)
-    name_el  = html.A(name or ticker,
-                      href=ms_url, target="_blank",
-                      style={"color": C["price"], "textDecoration": "none",
-                             "fontWeight": "600", "fontSize": "12px"})
+    name    = get_asset_name(info)
+    ms_url  = get_morningstar_url(ticker, is_mf)
+    name_el = html.A(name or ticker,
+                     href=ms_url, target="_blank",
+                     style={"color": C["price"], "textDecoration": "none",
+                            "fontWeight": "600", "fontSize": "12px"})
 
-    # Trade / Trend / Opinion with color
     def sig_span(label, sig):
         return html.Span([
             html.Span(f"{label}: ", style={"color": C["muted"]}),
             html.Span(sig, style={"color": sig_color(sig), "fontWeight": "700"}),
         ], style={"fontSize": "11px"})
+
+    # Bridge Bands outlook in status bar
+    bb_bull = s.get("bb_bull", True)
+    bb_col  = C["bb_bull"] if bb_bull else C["bb_bear"]
+    bb_lbl  = "BULL" if bb_bull else "BEAR"
 
     status_children = [
         name_el,
@@ -767,6 +998,11 @@ def update_chart(n_load, tf, n_rv, n_roc, ticker, asset_type):
         sig_span("Trade",   s["trade"]),
         sig_span("Trend",   s["trend"]),
         sig_span("Opinion", s["opinion"]),
+        html.Span("|", style={"color": C["border"]}),
+        html.Span([
+            html.Span("BB: ", style={"color": C["muted"]}),
+            html.Span(bb_lbl, style={"color": bb_col, "fontWeight": "700"}),
+        ], style={"fontSize": "11px"}),
         html.Span(f"${s['last']}", style={"color": C["text"], "fontSize": "11px"}),
     ]
 
@@ -774,13 +1010,14 @@ def update_chart(n_load, tf, n_rv, n_roc, ticker, asset_type):
 
 
 @app.callback(
-    Output("toggle-rv",  "style"),
-    Output("toggle-roc", "style"),
-    Input("toggle-rv",   "n_clicks"),
-    Input("toggle-roc",  "n_clicks"),
+    Output("toggle-rv",    "style"),
+    Output("toggle-stoch", "style"),
+    Input("toggle-rv",     "n_clicks"),
+    Input("toggle-stoch",  "n_clicks"),
 )
-def toggle_styles(n_rv, n_roc):
-    return _tog_style(n_rv % 2 == 1), _tog_style(n_roc % 2 == 1)
+def toggle_styles(n_rv, n_stoch):
+    return (_tog_style(n_rv    % 2 == 1),
+            _tog_style(n_stoch % 2 == 1))
 
 
 @app.callback(
