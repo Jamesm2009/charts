@@ -13,6 +13,7 @@ import numpy as np
 from datetime import datetime, timedelta
 import os, pickle, json
 import requests as req_lib
+from flask import request as flask_request
 
 app = dash.Dash(
     __name__,
@@ -925,9 +926,16 @@ def _tog_style(active):
             "border": f"1px solid {'#4a9eff55' if active else C['border']}"}
 
 # ── Layout ────────────────────────────────────────────────────────────────────
-app.layout = html.Div(style={"background": C["bg"], "minHeight": "100vh"}, children=[
-    dcc.Store(id="theme-store", data="dark"),
+def serve_layout():
+    initial_ticker = "SPY"
+    try:
+        initial_ticker = flask_request.args.get("symbol", "SPY").upper().strip()
+    except Exception:
+        pass
 
+    return html.Div(style={"background": C["bg"], "minHeight": "100vh"}, children=[
+        dcc.Store(id="theme-store", data="dark"),
+        
     # Top bar
     html.Div([
         html.Div([
@@ -936,7 +944,7 @@ app.layout = html.Div(style={"background": C["bg"], "minHeight": "100vh"}, child
                                         "marginLeft": "4px", "letterSpacing": "1px"}),
         ]),
         html.Div([
-            dcc.Input(id="ticker-input", value="SPY", type="text",
+            dcc.Input(id="ticker-input", value=initial_ticker, type="text",
                       placeholder="Ticker", debounce=False,
                       style={"fontFamily": "IBM Plex Mono", "fontSize": "13px", "fontWeight": "600",
                              "textTransform": "uppercase", "width": "90px",
@@ -1009,6 +1017,8 @@ app.layout = html.Div(style={"background": C["bg"], "minHeight": "100vh"}, child
         html.Div(id="mobile-stats-panel", style={"display": "none", "padding": "10px 12px"}),
     ], id="mobile-stats-container"),
 ])
+
+app.layout = serve_layout
 
 # ── Callbacks ─────────────────────────────────────────────────────────────────
 @app.callback(
