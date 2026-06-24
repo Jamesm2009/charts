@@ -1118,13 +1118,13 @@ app.clientside_callback(
             var url = new URL(href);
             var symbol = url.searchParams.get('symbol');
             if (symbol) {
-                return symbol.toUpperCase();
+                return [symbol.toUpperCase(), 1];
             }
         }
-        return window.dash_clientside.no_update;
+        return [window.dash_clientside.no_update, window.dash_clientside.no_update];
     }
     """,
-    Output("ticker-input", "value"),
+    [Output("ticker-input", "value"), Output("load-btn", "n_clicks")],
     Input("url", "href"),
 )
 
