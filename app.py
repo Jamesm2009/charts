@@ -13,7 +13,6 @@ import numpy as np
 from datetime import datetime, timedelta
 import os, pickle, json
 import requests as req_lib
-from flask import request as flask_request
 
 app = dash.Dash(
     __name__,
@@ -926,15 +925,11 @@ def _tog_style(active):
             "border": f"1px solid {'#4a9eff55' if active else C['border']}"}
 
 # ── Layout ────────────────────────────────────────────────────────────────────
-def serve_layout():
-    initial_ticker = "SPY"
-    try:
-        initial_ticker = flask_request.args.get("symbol", "SPY").upper().strip()
-    except Exception:
-        pass
 
+    app.layout = html.Div(style={"background": C["bg"], "minHeight": "100vh"}, children=[
     return html.Div(style={"background": C["bg"], "minHeight": "100vh"}, children=[
         dcc.Store(id="theme-store", data="dark"),
+        dcc.Location(id="url", refresh=False),
         
     # Top bar
     html.Div([
@@ -944,7 +939,7 @@ def serve_layout():
                                         "marginLeft": "4px", "letterSpacing": "1px"}),
         ]),
         html.Div([
-            dcc.Input(id="ticker-input", value=initial_ticker, type="text",
+            dcc.Input(id="ticker-input", value="SPY", type="text",
                       placeholder="Ticker", debounce=False,
                       style={"fontFamily": "IBM Plex Mono", "fontSize": "13px", "fontWeight": "600",
                              "textTransform": "uppercase", "width": "90px",
@@ -1116,6 +1111,22 @@ def toggle_mobile(n):
         return {"display": "block", "padding": "10px 12px"}, "Hide Stats"
     return {"display": "none", "padding": "10px 12px"}, "Stats"
 
+app.clientside_callback(
+    """
+    function(href) {
+        if (href) {
+            var url = new URL(href);
+            var symbol = url.searchParams.get('symbol');
+            if (symbol) {
+                return symbol.toUpperCase();
+            }
+        }
+        return window.dash_clientside.no_update;
+    }
+    """,
+    Output("ticker-input", "value"),
+    Input("url", "href"),
+)
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8050))
