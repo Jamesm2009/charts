@@ -945,8 +945,7 @@ def _tog_style(active):
 # ── Layout ────────────────────────────────────────────────────────────────────
 
     app.layout = html.Div(style={"background": C["bg"], "minHeight": "100vh"}, children=[
-    return html.Div(style={"background": C["bg"], "minHeight": "100vh"}, children=[
-        dcc.Store(id="theme-store", data="dark"),
+    dcc.Store(id="theme-store", data="dark"),
               
     # Top bar
     html.Div([
@@ -1030,21 +1029,18 @@ def _tog_style(active):
     ], id="mobile-stats-container"),
 ])
 
-app.layout = serve_layout
-
 # ── Callbacks ─────────────────────────────────────────────────────────────────
 @app.callback(
     Output("main-chart",         "figure"),
     Output("stats-sidebar",      "children"),
     Output("mobile-stats-panel", "children"),
     Output("status-bar",         "children"),
-    Input("load-btn",            "n_clicks"),
+   Input("load-btn",            "n_clicks"),
+    Input("ticker-input",        "value"),
     Input("timeframe",           "value"),
     Input("toggle-rv",           "n_clicks"),
     Input("toggle-stoch",        "n_clicks"),
-    Input("ticker-input",        "value"),
     State("asset-type",          "value"),
-    prevent_initial_call=False,
 )
 def update_chart(n_load, ticker, tf, n_rv, n_stoch, asset_type):
     ticker     = (ticker or "SPY").upper().strip()
