@@ -47,6 +47,24 @@ input[type=radio] { accent-color: #4a9eff; cursor: pointer; }
 <body>
 {%app_entry%}
 <footer>{%config%}{%scripts%}{%renderer%}</footer>
+<script>
+(function(){
+    var params = new URLSearchParams(window.location.search);
+    var sym = params.get('symbol');
+    if (!sym) return;
+    sym = sym.toUpperCase();
+    function tryLoad() {
+        var input = document.getElementById('ticker-input');
+        var btn = document.getElementById('load-btn');
+        if (!input || !btn) { setTimeout(tryLoad, 200); return; }
+        var setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+        setter.call(input, sym);
+        input.dispatchEvent(new Event('input', {bubbles: true}));
+        setTimeout(function(){ btn.click(); }, 300);
+    }
+    setTimeout(tryLoad, 1500);
+})();
+</script>
 </body>
 </html>"""
 
@@ -929,8 +947,7 @@ def _tog_style(active):
     app.layout = html.Div(style={"background": C["bg"], "minHeight": "100vh"}, children=[
     return html.Div(style={"background": C["bg"], "minHeight": "100vh"}, children=[
         dcc.Store(id="theme-store", data="dark"),
-        dcc.Location(id="url", refresh=False),
-        
+              
     # Top bar
     html.Div([
         html.Div([
@@ -1110,23 +1127,6 @@ def toggle_mobile(n):
     if n % 2 == 1:
         return {"display": "block", "padding": "10px 12px"}, "Hide Stats"
     return {"display": "none", "padding": "10px 12px"}, "Stats"
-
-app.clientside_callback(
-    """
-    function(href) {
-        if (href) {
-            var url = new URL(href);
-            var symbol = url.searchParams.get('symbol');
-            if (symbol) {
-                return [symbol.toUpperCase(), 1];
-            }
-        }
-        return [window.dash_clientside.no_update, window.dash_clientside.no_update];
-    }
-    """,
-    [Output("ticker-input", "value"), Output("load-btn", "n_clicks")],
-    Input("url", "href"),
-)
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8050))
