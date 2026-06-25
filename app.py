@@ -940,7 +940,7 @@ def _tog_style(active):
         ]),
         html.Div([
             dcc.Input(id="ticker-input", value="SPY", type="text",
-                      placeholder="Ticker", debounce=False,
+                      placeholder="Ticker", debounce=True,
                       style={"fontFamily": "IBM Plex Mono", "fontSize": "13px", "fontWeight": "600",
                              "textTransform": "uppercase", "width": "90px",
                              "padding": "5px 10px", "borderRadius": "5px",
@@ -1025,11 +1025,11 @@ app.layout = serve_layout
     Input("timeframe",           "value"),
     Input("toggle-rv",           "n_clicks"),
     Input("toggle-stoch",        "n_clicks"),
-    State("ticker-input",        "value"),
+    Input("ticker-input",        "value"),
     State("asset-type",          "value"),
     prevent_initial_call=False,
 )
-def update_chart(n_load, tf, n_rv, n_stoch, ticker, asset_type):
+def update_chart(n_load, ticker, tf, n_rv, n_stoch, asset_type):
     ticker     = (ticker or "SPY").upper().strip()
     is_weekly  = (tf == "weekly")
     is_mf      = (asset_type == "mf")
