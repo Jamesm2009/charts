@@ -943,10 +943,9 @@ def _tog_style(active):
             "border": f"1px solid {'#4a9eff55' if active else C['border']}"}
 
 # ── Layout ────────────────────────────────────────────────────────────────────
-
-    app.layout = html.Div(style={"background": C["bg"], "minHeight": "100vh"}, children=[
+app.layout = html.Div(style={"background": C["bg"], "minHeight": "100vh"}, children=[
     dcc.Store(id="theme-store", data="dark"),
-              
+
     # Top bar
     html.Div([
         html.Div([
@@ -956,7 +955,7 @@ def _tog_style(active):
         ]),
         html.Div([
             dcc.Input(id="ticker-input", value="SPY", type="text",
-                      placeholder="Ticker", debounce=True,
+                      placeholder="Ticker", debounce=False,
                       style={"fontFamily": "IBM Plex Mono", "fontSize": "13px", "fontWeight": "600",
                              "textTransform": "uppercase", "width": "90px",
                              "padding": "5px 10px", "borderRadius": "5px",
@@ -1035,14 +1034,15 @@ def _tog_style(active):
     Output("stats-sidebar",      "children"),
     Output("mobile-stats-panel", "children"),
     Output("status-bar",         "children"),
-   Input("load-btn",            "n_clicks"),
-    Input("ticker-input",        "value"),
+    Input("load-btn",            "n_clicks"),
     Input("timeframe",           "value"),
     Input("toggle-rv",           "n_clicks"),
     Input("toggle-stoch",        "n_clicks"),
+    State("ticker-input",        "value"),
     State("asset-type",          "value"),
+    prevent_initial_call=False,
 )
-def update_chart(n_load, ticker, tf, n_rv, n_stoch, asset_type):
+def update_chart(n_load, tf, n_rv, n_stoch, ticker, asset_type):
     ticker     = (ticker or "SPY").upper().strip()
     is_weekly  = (tf == "weekly")
     is_mf      = (asset_type == "mf")
@@ -1123,6 +1123,7 @@ def toggle_mobile(n):
     if n % 2 == 1:
         return {"display": "block", "padding": "10px 12px"}, "Hide Stats"
     return {"display": "none", "padding": "10px 12px"}, "Stats"
+
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8050))
