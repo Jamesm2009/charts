@@ -47,24 +47,6 @@ input[type=radio] { accent-color: #4a9eff; cursor: pointer; }
 <body>
 {%app_entry%}
 <footer>{%config%}{%scripts%}{%renderer%}</footer>
-<script>
-(function(){
-    var params = new URLSearchParams(window.location.search);
-    var sym = params.get('symbol');
-    if (!sym) return;
-    sym = sym.toUpperCase();
-    function tryLoad() {
-        var input = document.getElementById('ticker-input');
-        var btn = document.getElementById('load-btn');
-        if (!input || !btn) { setTimeout(tryLoad, 200); return; }
-        var setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
-        setter.call(input, sym);
-        input.dispatchEvent(new Event('input', {bubbles: true}));
-        setTimeout(function(){ btn.click(); }, 300);
-    }
-    setTimeout(tryLoad, 1500);
-})();
-</script>
 </body>
 </html>"""
 
@@ -942,9 +924,301 @@ def _tog_style(active):
             "color": C["price"] if active else C["muted"],
             "border": f"1px solid {'#4a9eff55' if active else C['border']}"}
 
+# ── Guide modal ───────────────────────────────────────────────────────────────
+GUIDE_DOC_URL = "https://docs.google.com/document/d/1aQdi5b70U5MESVkGSeaRLOwYMUqy-Cte_ZQLWeMNl7s/edit?usp=sharing"   # ← replace with your Google Doc link
+
+def _guide_section(title, color=None):
+    return html.Div(title, style={
+        "fontSize": "11px", "fontWeight": "700", "letterSpacing": "1px",
+        "color": color or C["price"], "marginTop": "22px", "marginBottom": "8px",
+        "borderBottom": f"1px solid {C['border']}", "paddingBottom": "5px",
+        "textTransform": "uppercase",
+    })
+
+def _guide_row(label, body, label_color=None):
+    return html.Div([
+        html.Div(label, style={
+            "fontSize": "11px", "fontWeight": "700",
+            "color": label_color or C["text"],
+            "marginBottom": "3px",
+        }),
+        html.Div(body, style={
+            "fontSize": "11px", "color": C["muted"], "lineHeight": "1.6",
+        }),
+    ], style={"marginBottom": "14px"})
+
+def _pill(text, color):
+    return html.Span(text, style={
+        "color": color, "background": f"{color}22",
+        "padding": "1px 7px", "borderRadius": "4px",
+        "fontSize": "10px", "fontWeight": "700",
+        "display": "inline-block", "marginRight": "6px",
+    })
+
+def build_guide_modal():
+    content = html.Div([
+
+        # ── Header ────────────────────────────────────────────────────────────
+        html.Div([
+            html.Div([
+                html.Span("Custom", style={"color": C["text"],  "fontWeight": "400", "fontSize": "18px"}),
+                html.Span("Charts", style={"color": C["price"], "fontWeight": "800", "fontSize": "18px",
+                                           "marginLeft": "5px"}),
+                html.Span(" — User Guide", style={"color": C["muted"], "fontSize": "14px",
+                                                   "marginLeft": "8px", "fontWeight": "400"}),
+            ]),
+            html.Button("✕", id="guide-close", n_clicks=0, style={
+                "background": "transparent", "border": "none",
+                "color": C["muted"], "fontSize": "20px", "cursor": "pointer",
+                "fontFamily": "IBM Plex Mono", "lineHeight": "1", "padding": "0 4px",
+            }),
+        ], style={"display": "flex", "justifyContent": "space-between",
+                  "alignItems": "center", "marginBottom": "4px"}),
+
+        html.Div("A technical analysis charting tool for ETFs, stocks and mutual funds.",
+                 style={"color": C["muted"], "fontSize": "11px", "marginBottom": "4px"}),
+
+        # Full guide link
+        html.A("📄  Open Full Guide (Google Docs)",
+               href=GUIDE_DOC_URL, target="_blank",
+               style={"color": C["price"], "fontSize": "11px", "fontWeight": "600",
+                      "textDecoration": "none", "display": "inline-block",
+                      "border": f"1px solid {C['border']}", "borderRadius": "4px",
+                      "padding": "4px 12px", "marginTop": "6px"}),
+
+        # ── GETTING STARTED ───────────────────────────────────────────────────
+        _guide_section("Getting Started"),
+        _guide_row("Enter a ticker",
+            "Type any stock, ETF or mutual fund ticker in the box at the top left and press Load. "
+            "Use the ETF/Stock or Mut. Fund selector to match the asset type — this affects "
+            "how the chart displays and which Morningstar link is generated."),
+        _guide_row("Timeframes",
+            [html.Span([_pill("Daily", C["price"]),
+                        "Shows the past 8 months of daily price bars. Best for near-term analysis."]),
+             html.Br(),
+             html.Span([_pill("Weekly", C["price"]),
+                        "Shows the past 3 years of weekly price bars. Best for long-term trend context."])]),
+        _guide_row("Optional panels",
+            ["Toggle ", _pill("Realized Vol", C["rv"]), "and ", _pill("Stoch RSI", C["stoch_k"]),
+             " on or off using the buttons below the top bar. "
+             "The Price, Matrix and Momentum panels are always visible."]),
+
+        # ── PRICE PANEL ───────────────────────────────────────────────────────
+        _guide_section("Price Panel"),
+        _guide_row("Candlestick bars",
+            "Each bar shows the Open, High, Low and Close for that period. "
+            "Blue bars = price closed higher than it opened. Red bars = closed lower."),
+
+        _guide_row("Bridge Bands",
+            ["The envelope around price. Wider bands = higher volatility or a strongly trending/mean-reverting market. "
+             "Narrower bands = calmer, more random conditions. ",
+             html.Br(), html.Br(),
+             _pill("Green bands", C["bb_bull"]),
+             "Price is above the 63-period trend line — bullish regime. ",
+             html.Br(),
+             _pill("Red bands", C["bb_bear"]),
+             "Price is below the 63-period trend line — bearish regime. ",
+             html.Br(), html.Br(),
+             "The dashed midline is the centre of the band. "
+             "Price near the top band = stretched to the upside. Near the bottom = stretched to the downside. "
+             "The BB Upside and Downside % in the sidebar tell you exactly how far you are from each edge."]),
+
+        _guide_row("Trend line (63-period)",
+            ["A solid line showing the midpoint of the highest high and lowest low over the past 63 bars "
+             "(the Donchian channel midpoint). This is the dividing line between bull and bear regimes. "
+             "Green when price is above it, red when below. "
+             "Think of it as the medium-term directional anchor."]),
+
+        _guide_row("Trade line (15-period)",
+            ["Small dots showing the shorter-term 15-period Donchian midpoint. "
+             "Green dots = price is above the short-term midpoint (short-term bullish). "
+             "Red dots = below (short-term bearish). "
+             "When the Trade and Trend lines agree in direction, the Opinion signal is at its strongest."]),
+
+        _guide_row("Volume bars",
+            "The bars along the bottom of the price panel. Green = price closed up that day. "
+            "Red = price closed down. The orange line is the 21-period average volume — "
+            "bars well above the line indicate unusually high activity."),
+
+        # ── SIGNALS SIDEBAR ───────────────────────────────────────────────────
+        _guide_section("Signals & Stats Sidebar"),
+        _guide_row("Trade  (15)",
+            ["Compares the current price to the 15-period trade line. ",
+             _pill("Bullish", C["bb_bull"]), "= price above. ",
+             _pill("Neutral", C["muted"]),   "= within 1% below. ",
+             _pill("Bearish", C["bb_bear"]), "= more than 1% below."]),
+        _guide_row("Trend  (63)",
+            "Same logic but using the longer 63-period trend line. "
+            "Trend is slower to change and filters out short-term noise."),
+        _guide_row("Opinion",
+            ["A combined signal. ",
+             _pill("Bullish", C["bb_bull"]), "only when both Trade and Trend are Bullish. ",
+             _pill("Bearish", C["bb_bear"]), "only when both are Bearish. ",
+             _pill("Neutral", C["muted"]), "for everything in between. "
+             "Opinion is the most reliable of the three — it requires confirmation from both timeframes."]),
+        _guide_row("Bridge Bands Outlook",
+            [_pill("BULL", C["bb_bull"]), "= price above the 63-period trend line. ",
+             _pill("BEAR", C["bb_bear"]), "= below. This directly drives the band colour on the chart."]),
+        _guide_row("BB Upside / Downside %",
+            "How far the current price is from the upper and lower Bridge Band edges, as a percentage. "
+            "A small upside % means you're near the top of the band — less room to run, more risk. "
+            "A large upside % means the bands are wide above you — more room to move."),
+        _guide_row("Hurst Exponent",
+            "A measure of market regime. Values above 0.5 indicate a trending market where momentum tends to persist. "
+            "Values below 0.5 indicate mean-reversion — price tends to snap back. "
+            "Near 0.5 = random, unpredictable. The Bridge Bands use this internally to widen or narrow."),
+        _guide_row("vs EMA 200",
+            "How far the current price is from the 200-period exponential moving average, as a percentage. "
+            "The 200 EMA is a widely-watched long-term trend indicator. "
+            "Large positive % = extended above long-term trend. Negative % = below."),
+        _guide_row("Performance",
+            "Rolling price returns over 1 day, 1 week, 1 month, 3 months and 6 months. "
+            "All calculated from daily data regardless of whether you're viewing the daily or weekly chart."),
+        _guide_row("RV 1M",
+            "Realized Volatility over the past 21 trading days, annualized. "
+            "This is actual observed price volatility — not a forecast. "
+            "Higher values mean the asset has been moving more. Useful for position sizing."),
+        _guide_row("12M Z-Score",
+            ["How many standard deviations the current price is from its 12-month average. "
+             "Values beyond ±2 are statistically unusual. ",
+             _pill("OVERBOUGHT", C["bb_bear"]), "appears above +2.0. ",
+             _pill("OVERSOLD",   C["bb_bull"]), "appears below −2.0. "
+             "These are not buy/sell signals on their own — "
+             "a strongly trending asset can stay overbought for extended periods."]),
+
+        # ── MATRIX SERIES ─────────────────────────────────────────────────────
+        _guide_section("Matrix Series Panel"),
+        _guide_row("What it shows",
+            "A momentum oscillator that triple-smooths a Z-scored weighted price into two lines "
+            "called 'up' and 'down'. The bars span the gap between these two lines."),
+        _guide_row("Bar colour",
+            [_pill("Green bars", C["ms_bull"]), "= 'up' is above 'down' — momentum is accelerating. ",
+             html.Br(),
+             _pill("Red bars",   C["ms_bear"]), "= 'up' is at or below 'down' — momentum is decelerating. ",
+             html.Br(), html.Br(),
+             "A sequence of green bars growing taller = strengthening bullish momentum. "
+             "Red bars growing taller = strengthening bearish momentum. "
+             "Short, choppy alternating bars = no clear momentum direction."]),
+        _guide_row("Green / Red boundary lines",
+            "The green line is a dynamic resistance level and the red line is a dynamic support level, "
+            "both derived from the CCI oscillator over a 50-bar lookback. "
+            "When the Matrix bars push above the green line, momentum is extended to the upside. "
+            "When bars fall below the red line, momentum is extended to the downside."),
+        _guide_row("Teal + markers",
+            ["Cyan cross markers appear above or below the bars when momentum is extreme. "
+             "They indicate the 'up' line has exceeded +200 (", _pill("OB", "#22d3ee"),
+             ") or the 'down' line has fallen below −200 (", _pill("OS", "#22d3ee"), "). "
+             "These are not automatic reversal signals — they flag that momentum is stretched "
+             "and worth watching for a change in direction."]),
+
+        # ── MOMENTUM PANEL ────────────────────────────────────────────────────
+        _guide_section("Momentum Panel"),
+        _guide_row("What it shows",
+            "The percentage difference between the 5-day moving average and the 63-day moving average of price. "
+            "Positive = short-term average is above the medium-term average (upward momentum). "
+            "Negative = short-term has crossed below medium-term (downward momentum)."),
+        _guide_row("How to read it",
+            "A rising green bar that is growing means momentum is building. "
+            "A green bar that is shrinking back toward zero means momentum is fading even if price is still rising. "
+            "The cross from positive to negative (or vice versa) is a meaningful momentum shift."),
+
+        # ── STOCH RSI ─────────────────────────────────────────────────────────
+        _guide_section("Stochastic RSI  (optional)"),
+        _guide_row("What it shows",
+            "A double-smoothed momentum oscillator that combines RSI (Relative Strength Index) "
+            "and the Stochastic formula. It oscillates between 0 and 100. "
+            "The blue line (%K) is faster. The red line (%D) is a smoothed version of %K."),
+        _guide_row("Overbought / Oversold",
+            "Above 80 = overbought — the asset has moved up quickly and may be due for a pullback. "
+            "Below 20 = oversold — the asset has moved down quickly and may be due for a bounce. "
+            "These levels are most useful in range-bound markets. In strong trends, "
+            "the indicator can stay overbought or oversold for a long time."),
+        _guide_row("%K / %D crossovers",
+            "When the blue %K line crosses above the red %D line in the oversold zone, "
+            "it is often read as a short-term buy signal. "
+            "When %K crosses below %D in the overbought zone, it can signal a short-term pullback."),
+
+        # ── REALIZED VOL ──────────────────────────────────────────────────────
+        _guide_section("Realized Volatility  (optional)"),
+        _guide_row("What it shows",
+            "The annualized standard deviation of daily log returns over the past 21 trading days, "
+            "expressed as a percentage. This is backward-looking — it measures how much the asset "
+            "actually moved, not how much it is expected to move."),
+        _guide_row("How to use it",
+            "Rising RV = the asset is becoming more volatile — consider smaller position sizes. "
+            "Falling RV = conditions are calming. "
+            "Compare RV 1M in the sidebar to the chart to see whether current volatility is "
+            "high or low relative to recent history."),
+
+        # ── TIPS ──────────────────────────────────────────────────────────────
+        _guide_section("Reading the Chart — Quick Tips"),
+        html.Div([
+            html.Div("• Start with the timeframe. Load the weekly chart first to understand the bigger trend, "
+                     "then switch to daily for timing.",
+                     style={"fontSize": "11px", "color": C["muted"], "marginBottom": "8px",
+                            "lineHeight": "1.6"}),
+            html.Div("• Check Opinion first. If it is Neutral, the short and medium-term signals disagree — "
+                     "conditions are mixed.",
+                     style={"fontSize": "11px", "color": C["muted"], "marginBottom": "8px",
+                            "lineHeight": "1.6"}),
+            html.Div("• Check band position. A Bullish Opinion with price near the top of the Bridge Bands "
+                     "means less upside room. The same Bullish Opinion near the bottom of the bands is a "
+                     "more attractive entry.",
+                     style={"fontSize": "11px", "color": C["muted"], "marginBottom": "8px",
+                            "lineHeight": "1.6"}),
+            html.Div("• Use the Matrix to confirm. Green bars growing taller alongside a Bullish Opinion "
+                     "is a stronger setup than a Bullish Opinion with choppy or shrinking Matrix bars.",
+                     style={"fontSize": "11px", "color": C["muted"], "marginBottom": "8px",
+                            "lineHeight": "1.6"}),
+            html.Div("• Z-Score context. An OVERBOUGHT flag alongside a Bullish Opinion just means the "
+                     "move has been large — it is a caution, not a reversal signal.",
+                     style={"fontSize": "11px", "color": C["muted"], "marginBottom": "8px",
+                            "lineHeight": "1.6"}),
+        ]),
+
+        # ── FOOTER ────────────────────────────────────────────────────────────
+        html.Div(style={"borderTop": f"1px solid {C['border']}", "marginTop": "20px",
+                        "paddingTop": "14px"}),
+        html.Div([
+            html.Span("Indicator credits: ", style={"color": C["muted"], "fontSize": "10px"}),
+            html.A("Bridge Bands — calebsandfort",
+                   href="https://www.tradingview.com/v/IhUChSph/", target="_blank",
+                   style={"color": C["muted"], "fontSize": "10px", "marginRight": "16px"}),
+            html.A("Matrix Series — wisestocktrader.com",
+                   href="http://www.wisestocktrader.com/indicators/2739-flower-indicator",
+                   target="_blank",
+                   style={"color": C["muted"], "fontSize": "10px"}),
+        ]),
+        html.Div(style={"height": "20px"}),
+
+    ], style={
+        "maxWidth": "680px", "margin": "0 auto",
+        "padding": "24px 28px",
+        "fontFamily": "IBM Plex Mono",
+    })
+
+    return html.Div(
+        content,
+        id="guide-modal",
+        style={
+            "display":         "none",
+            "position":        "fixed",
+            "top":             "0", "left": "0",
+            "width":           "100%", "height": "100%",
+            "zIndex":          "1000",
+            "overflowY":       "auto",
+            "background":      "rgba(13,17,23,0.97)",
+            "borderLeft":      f"1px solid {C['border']}",
+        },
+    )
+
+
 # ── Layout ────────────────────────────────────────────────────────────────────
 app.layout = html.Div(style={"background": C["bg"], "minHeight": "100vh"}, children=[
     dcc.Store(id="theme-store", data="dark"),
+
+    # Guide modal overlay
+    build_guide_modal(),
 
     # Top bar
     html.Div([
@@ -977,6 +1251,12 @@ app.layout = html.Div(style={"background": C["bg"], "minHeight": "100vh"}, child
                 style={"fontFamily": "IBM Plex Mono", "fontSize": "12px", "fontWeight": "700",
                        "padding": "5px 16px", "background": C["price"], "color": "#0d1117",
                        "border": "none", "borderRadius": "5px", "cursor": "pointer"}),
+            html.Button("?", id="guide-btn", n_clicks=0,
+                title="User Guide",
+                style={"fontFamily": "IBM Plex Mono", "fontSize": "13px", "fontWeight": "700",
+                       "padding": "5px 12px", "background": "transparent", "color": C["muted"],
+                       "border": f"1px solid {C['border']}", "borderRadius": "5px",
+                       "cursor": "pointer", "lineHeight": "1"}),
         ], style={"display": "flex", "alignItems": "center", "gap": "12px", "flexWrap": "wrap"}),
     ], style={"display": "flex", "alignItems": "center", "justifyContent": "space-between",
               "padding": "8px 14px", "flexWrap": "wrap", "gap": "8px",
@@ -1112,6 +1392,30 @@ def update_chart(n_load, tf, n_rv, n_stoch, ticker, asset_type):
 def toggle_styles(n_rv, n_stoch):
     return (_tog_style(n_rv    % 2 == 1),
             _tog_style(n_stoch % 2 == 1))
+
+
+@app.callback(
+    Output("guide-modal", "style"),
+    Input("guide-btn",   "n_clicks"),
+    Input("guide-close", "n_clicks"),
+    prevent_initial_call=True,
+)
+def toggle_guide(n_open, n_close):
+    from dash import ctx
+    visible = {
+        "display":    "block",
+        "position":   "fixed",
+        "top":        "0", "left": "0",
+        "width":      "100%", "height": "100%",
+        "zIndex":     "1000",
+        "overflowY":  "auto",
+        "background": "rgba(13,17,23,0.97)",
+        "borderLeft": f"1px solid {C['border']}",
+    }
+    hidden = {**visible, "display": "none"}
+    if ctx.triggered_id == "guide-btn":
+        return visible
+    return hidden
 
 
 @app.callback(
